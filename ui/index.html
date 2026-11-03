@@ -1,0 +1,58 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Alzheimer Report Agent</title>
+<style>
+:root{--bg:#f4f6fb;--ink:#1b2333;--mut:#667089;--line:#dde3ef;--pri:#3b4fd8;--red:#b3392b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 Segoe UI,Arial,sans-serif}
+header{background:#1b2547;color:#fff;padding:14px 24px;display:flex;gap:14px;align-items:baseline}header small{color:#b9c3e6}
+main{max-width:1150px;margin:24px auto;padding:0 16px;display:grid;grid-template-columns:.8fr 1.2fr;gap:18px;align-items:start}
+.card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:20px}h2{margin:0 0 12px;font-size:18px}h3{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--mut);margin:14px 0 4px}
+input,select,textarea{width:100%;border:1px solid #c9d2e4;border-radius:9px;padding:9px;font:inherit;margin:4px 0 10px}textarea{min-height:70px}
+button{background:var(--pri);color:#fff;border:0;border-radius:9px;padding:9px 14px;font:inherit;font-weight:600;cursor:pointer;margin:6px 6px 0 0}button.rej{background:#fff0ee;color:var(--red)}button:disabled{opacity:.5}
+#status{margin-top:10px;font-size:13px;color:var(--mut)}#status.error{color:var(--red)}#status.ok{color:#17703f}
+.pill{display:inline-block;background:#e8ecfb;color:#2b3aa8;border-radius:20px;padding:3px 10px;font-size:12px;font-weight:700;margin-right:6px}
+.bar{position:relative;background:#eef1f8;border-radius:6px;margin:4px 0;height:22px;font-size:12px;overflow:hidden}.bar i{position:absolute;inset:0 auto 0 0;background:#b8c3f3}.bar span,.bar b{position:relative;padding:3px 8px}.bar b{float:right}
+.cam{width:220px;border-radius:8px;display:block;margin-top:10px}.warn{background:#fff6df;border:1px solid #f0dda9;padding:12px;border-radius:9px}.hidden{display:none}#prev{max-width:100%;max-height:170px;border-radius:8px}
+@media(max-width:800px){main{grid-template-columns:1fr}}
+</style></head><body>
+<header><b>Alzheimer MRI Report Agent</b><small>Academic demo · not for clinical use</small></header>
+<main>
+<section class="card"><h2>1. Upload scan</h2>
+<label>Patient</label><select id="sel"><option value="">New patient</option></select>
+<input id="name" placeholder="Patient name (for a new patient)">
+<label>Clinical note (optional)</label><textarea id="note"></textarea>
+<input type="file" id="file" accept="image/*"><img id="prev" class="hidden">
+<button id="go" onclick="run(false)">Generate report</button><div id="status"></div>
+<details style="margin-top:14px"><summary>Connection settings</summary>n8n base URL<input id="n8n" value="http://localhost:5678">Service URL<input id="svc" value="http://localhost:8000"></details></section>
+<section class="card"><h2>2. Report</h2><div id="out" style="color:#667089">Nothing yet.</div></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);let img=null,cur=null,pend=null;
+const N=()=>$('n8n').value.replace(/\/$/,''),S=()=>$('svc').value.replace(/\/$/,'');
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const st=(m,c='')=>{$('status').textContent=m;$('status').className=c};
+async function patients(){try{const r=await(await fetch(S()+'/patients')).json();$('sel').innerHTML='<option value="">New patient</option>'+r.map(p=>`<option value="${p.patient_id}">${esc(p.name)} (${p.patient_id})</option>`).join('')}catch(e){}}
+$('file').onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{img={b64:r.result.split(',')[1],mime:f.type};$('prev').src=r.result;$('prev').className=''};r.readAsDataURL(f)};
+async function post(u,b){const r=await fetch(u,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});if(!r.ok)throw new Error('HTTP '+r.status+' '+(await r.text()).slice(0,200));return r.json()}
+async function run(force){
+ const pid=$('sel').value||(force&&pend)||'',name=$('name').value.trim();
+ if(!img)return st('Choose an MRI image first','error');if(!pid&&!name)return st('Enter the patient name','error');
+ $('go').disabled=true;st('Classifying and drafting report (Ollama can take a minute)...');
+ try{const d=await post(N()+'/webhook/alz-report-analyze',{patient_name:name,patient_id:pid||null,clinical_note:$('note').value,image_base64:img.b64,mime_type:img.mime,force:!!force});
+  if(d.status==='clarification_required'){pend=d.patient.id;$('out').innerHTML=`<div class="warn">${esc(d.question)}</div><button onclick="run(true)">Proceed anyway</button>`;st('Low confidence','error')}
+  else{pend=null;cur=d;render(d);st('Draft ready. Review, edit if needed, then approve.','ok');patients()}
+ }catch(e){st(e.message,'error')}$('go').disabled=false}
+function render(d){const p=d.prediction,r=d.report;
+ const bars=Object.entries(p.probabilities).map(([k,v])=>`<div class="bar"><i style="width:${v*100}%"></i><span>${k}</span><b>${(v*100).toFixed(1)}%</b></div>`).join('');
+ const secs=[['summary','Summary'],['findings','Imaging findings'],['interpretation','Interpretation'],['trend_commentary','Trend'],['limitations','Limitations']].map(([k,t])=>`<h3>${t}</h3><textarea data-k="${k}">${esc(r[k])}</textarea>`).join('');
+ $('out').style.color='';$('out').innerHTML=`<span class="pill">${esc(d.patient.name)} · ${d.patient.id}</span><span class="pill">${d.case_id}</span>
+ <h1 style="margin:10px 0">${p.stage} <small style="font-size:16px;color:#667089">${(p.confidence*100).toFixed(1)}%</small></h1>${bars}
+ <img class="cam" src="data:image/png;base64,${d.gradcam_png_base64}"><small>Grad-CAM region: ${esc(d.region)}</small>
+ <p style="font-size:13px;color:#667089">Reviewer: ${d.review.passed?'passed':'failed, template fallback used'} after ${d.review.attempts} check(s) · source: ${d.report_source}</p>
+ ${secs}<h3>Suggested next steps</h3><ul>${d.recommendations.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
+ <div id="act"><button onclick="decide('approve')">Approve</button><button onclick="decide('edit')">Save edits &amp; approve</button><button class="rej" onclick="decide('reject')">Reject</button></div><div id="pdf"></div>`}
+async function decide(decision){const ed={};document.querySelectorAll('#out textarea').forEach(t=>ed[t.dataset.k]=t.value);
+ try{const d=await post(N()+'/webhook/alz-report-approval',{case_id:cur.case_id,decision,edited_report:decision==='edit'?ed:null});
+  st('Status: '+d.approval.status,d.approval.status==='approved'?'ok':'error');$('act').classList.add('hidden');
+  if(d.approval.pdf_url)$('pdf').innerHTML=`<a href="${S()+d.approval.pdf_url}" target="_blank"><button>Download PDF</button></a>`
+ }catch(e){st(e.message,'error')}}
+patients();
+</script></body></html>

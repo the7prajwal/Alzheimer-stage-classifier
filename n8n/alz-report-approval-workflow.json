@@ -1,0 +1,91 @@
+{
+ "name": "Alzheimer Report Agent - Human Approval",
+ "active": false,
+ "nodes": [
+  {
+   "parameters": {
+    "httpMethod": "POST",
+    "path": "alz-report-approval",
+    "responseMode": "responseNode",
+    "options": {
+     "allowedOrigins": "*"
+    }
+   },
+   "id": "a1000000-0000-4000-8000-000000000021",
+   "name": "Webhook - Human Decision",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2.1,
+   "position": [
+    -400,
+    0
+   ],
+   "webhookId": "alz-report-approval"
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "=http://localhost:8000/cases/{{$json.body.case_id}}/decision",
+    "sendBody": true,
+    "contentType": "raw",
+    "rawContentType": "application/json",
+    "body": "={{JSON.stringify({decision:$json.body.decision,edited_report:$json.body.edited_report||null,note:$json.body.note||''})}}",
+    "options": {
+     "timeout": 60000
+    }
+   },
+   "id": "a1000000-0000-4000-8000-000000000022",
+   "name": "Apply Decision",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    -120,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{$json}}",
+    "options": {
+     "responseCode": 200
+    }
+   },
+   "id": "a1000000-0000-4000-8000-000000000023",
+   "name": "Return Decision",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.4,
+   "position": [
+    160,
+    0
+   ]
+  }
+ ],
+ "connections": {
+  "Webhook - Human Decision": {
+   "main": [
+    [
+     {
+      "node": "Apply Decision",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Apply Decision": {
+   "main": [
+    [
+     {
+      "node": "Return Decision",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1"
+ },
+ "tags": []
+}

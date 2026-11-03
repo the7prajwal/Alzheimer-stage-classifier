@@ -1,0 +1,387 @@
+{
+ "name": "Alzheimer Report Agent - Main",
+ "active": false,
+ "nodes": [
+  {
+   "parameters": {
+    "httpMethod": "POST",
+    "path": "alz-report-analyze",
+    "responseMode": "responseNode",
+    "options": {
+     "allowedOrigins": "*"
+    }
+   },
+   "id": "a1000000-0000-4000-8000-000000000001",
+   "name": "Webhook - Receive Scan",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2.1,
+   "position": [
+    -1000,
+    0
+   ],
+   "webhookId": "alz-report-analyze"
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "http://localhost:8000/predict",
+    "sendBody": true,
+    "contentType": "raw",
+    "rawContentType": "application/json",
+    "body": "={{JSON.stringify({patient_name:$json.body.patient_name||'',patient_id:$json.body.patient_id||null,image_base64:$json.body.image_base64})}}",
+    "options": {
+     "timeout": 120000
+    }
+   },
+   "id": "a1000000-0000-4000-8000-000000000002",
+   "name": "Classifier - Predict",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    -760,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "\nconst body = $('Webhook - Receive Scan').first().json.body || {};\nconst p = $input.first().json;\nconst STAGES = ['NonDemented','VeryMildDemented','MildDemented','ModerateDemented'];\nconst P = p.prediction, conf = P.confidence;\nconst band = conf >= 0.85 ? 'high' : conf >= 0.6 ? 'moderate' : 'low';\nconst prev = (p.history || [])[0];\nlet trend = { has_previous: false };\nif (prev) {\n  const d = STAGES.indexOf(P.stage) - STAGES.indexOf(prev.stage);\n  trend = { has_previous: true, previous_stage: prev.stage, previous_date: prev.date, previous_confidence: prev.confidence,\n            change: d > 0 ? 'progressed' : d < 0 ? 'improved' : 'unchanged', stages_changed: Math.abs(d), scans_on_record: p.history.length + 1 };\n}\nconst NEXT = {\n  NonDemented: ['No imaging pattern suggestive of dementia was flagged by the model.', 'Continue routine check-ups as advised by a clinician.'],\n  VeryMildDemented: ['Subtle early changes were flagged; discuss with a neurologist or memory clinic.', 'Clinician-administered cognitive screening is commonly used to follow up.'],\n  MildDemented: ['Consult a neurologist for clinical evaluation and cognitive testing.', 'Discuss support planning and home safety with the care team.'],\n  ModerateDemented: ['Prompt specialist evaluation is advised.', 'Involve family or caregivers in care planning and daily-living support.']\n};\nconst recommendations = [...NEXT[P.stage], 'This is a model screening output; a qualified clinician must confirm any finding.'];\nconst state = { case_id: body.case_id || 'CASE-' + Date.now(), patient: { id: p.patient_id, name: p.patient_name }, prediction: P,\n  region: p.region, region_note: p.region_note, gradcam_png_base64: p.gradcam_png_base64, trend, recommendations,\n  clinical_note: body.clinical_note || '', confidence_band: band, attempt: 0, feedback: [] };\nif (conf < 0.55 && !body.force) {\n  state.needs_clarification = true;\n  state.question = `The model is only ${(conf*100).toFixed(1)}% confident (${P.stage}). Upload a clearer axial MRI slice, or proceed to get a report clearly marked as low-confidence.`;\n} else state.needs_clarification = false;\nreturn [{ json: state }];\n"
+   },
+   "id": "a1000000-0000-4000-8000-000000000003",
+   "name": "Rules - Decide",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    -520,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "strict",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "c1",
+       "leftValue": "={{ $json.needs_clarification }}",
+       "rightValue": true,
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "id": "a1000000-0000-4000-8000-000000000004",
+   "name": "Needs Clarification?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    -280,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ {status:'clarification_required', question:$json.question, patient:$json.patient, prediction:$json.prediction} }}",
+    "options": {
+     "responseCode": 200
+    }
+   },
+   "id": "a1000000-0000-4000-8000-000000000005",
+   "name": "Return Clarification",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.4,
+   "position": [
+    -40,
+    -200
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "\nconst s = $json;\nconst pct = v => +(v * 100).toFixed(1);\nconst facts = { patient_name: s.patient.name, stage: s.prediction.stage, confidence_pct: pct(s.prediction.confidence),\n  probabilities_pct: Object.fromEntries(Object.entries(s.prediction.probabilities).map(([k, v]) => [k, pct(v)])),\n  confidence_band: s.confidence_band, gradcam_region: s.region_note, trend: s.trend, clinical_note: s.clinical_note };\nconst sys = 'You write a cautious AI-screening report for an academic brain-MRI classifier. Use ONLY the facts JSON. Never invent numbers, stages, measurements or history. Never state a diagnosis; use wording like \"the model predicts\" and \"consistent with\". Return a JSON object with string keys: summary, findings, interpretation, trend_commentary, limitations (2-3 sentences each). If trend.has_previous is false, trend_commentary must say no earlier scan is on record. If confidence_band is low, say the result should be treated cautiously.';\nlet user = 'FACTS:\\n' + JSON.stringify(facts);\nif (s.feedback && s.feedback.length) user += '\\n\\nYour previous draft was rejected by the reviewer: ' + s.feedback.join('; ') + '. Fix every issue and return the full JSON again.';\nreturn [{ json: { ...s, ollamaRequest: { model: 'llama3.1:8b', stream: false, format: 'json', options: { temperature: 0.2 },\n  messages: [{ role: 'system', content: sys }, { role: 'user', content: user }] } } }];\n"
+   },
+   "id": "a1000000-0000-4000-8000-000000000006",
+   "name": "Build Writer Request",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    -40,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "http://localhost:11434/api/chat",
+    "sendBody": true,
+    "contentType": "raw",
+    "rawContentType": "application/json",
+    "body": "={{JSON.stringify($json.ollamaRequest)}}",
+    "options": {
+     "timeout": 300000
+    }
+   },
+   "id": "a1000000-0000-4000-8000-000000000007",
+   "name": "Ollama - Report Writer",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    200,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "\nlet s; try { s = $('Build Writer Request').item.json; } catch (e) { s = $('Build Writer Request').last().json; }\nconst raw = ($input.first().json.message || {}).content || '';\nconst KEYS = ['summary','findings','interpretation','trend_commentary','limitations'];\nlet draft = null, issues = [];\ntry { draft = JSON.parse(raw); } catch (e) { issues.push('Output was not valid JSON'); }\nif (draft) {\n  for (const k of KEYS) if (typeof draft[k] !== 'string' || draft[k].trim().length < 20) issues.push('Missing or too short section: ' + k);\n  const text = KEYS.map(k => String(draft[k] || '')).join(' ');\n  const allowed = [s.prediction.confidence * 100, ...Object.values(s.prediction.probabilities).map(v => v * 100)];\n  (text.match(/\\d+(?:\\.\\d+)?\\s*%/g) || []).forEach(m => { const n = parseFloat(m); if (!allowed.some(a => Math.abs(a - n) <= 0.6)) issues.push('Percentage ' + m + ' is not in the supplied facts'); });\n  if (!String(draft.summary || '').toLowerCase().replace(/\\s/g, '').includes(s.prediction.stage.toLowerCase())) issues.push('Summary must name the predicted stage ' + s.prediction.stage);\n  if (/(diagnos(ed|is) with|has alzheimer|you have|confirmed (alzheimer|dementia))/i.test(text)) issues.push('Contains diagnostic language; use \"model predicts / consistent with\"');\n  if (!s.trend.has_previous && /(previous|earlier|prior) scan/i.test(String(draft.trend_commentary)) && !/no (earlier|previous|prior)/i.test(String(draft.trend_commentary))) issues.push('Mentions a previous scan but none is on record');\n}\nreturn [{ json: { ...s, draft, issues, review_passed: issues.length === 0, attempt: s.attempt + 1, feedback: issues } }];\n"
+   },
+   "id": "a1000000-0000-4000-8000-000000000008",
+   "name": "Reviewer - Fact Check",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    440,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "strict",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "c1",
+       "leftValue": "={{ $json.review_passed || $json.attempt >= 3 }}",
+       "rightValue": true,
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   },
+   "id": "a1000000-0000-4000-8000-000000000009",
+   "name": "Review Done?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2.2,
+   "position": [
+    680,
+    0
+   ]
+  },
+  {
+   "parameters": {
+    "jsCode": "\nconst s = $json, P = s.prediction, pct = (P.confidence * 100).toFixed(1);\nconst FIND = { NonDemented: 'no notable atrophy pattern', VeryMildDemented: 'subtle, early structural changes',\n  MildDemented: 'moderate structural changes, including some ventricular enlargement', ModerateDemented: 'pronounced atrophy with ventricular enlargement' };\nlet report = s.draft, source = 'llm_writer';\nif (!s.review_passed) {\n  source = 'template_fallback';\n  report = { summary: `The model classified this scan as ${P.stage} with ${s.confidence_band} confidence (${pct}%).`,\n    findings: `Model attention was concentrated in ${s.region_note}.`,\n    interpretation: `This pattern is consistent with ${FIND[P.stage]}. It is a screening output, not a diagnosis.`,\n    trend_commentary: s.trend.has_previous ? `Compared with the previous scan (${s.trend.previous_stage}, ${s.trend.previous_date}), the predicted stage has ${s.trend.change}.` : 'No earlier scan is on record for this patient.',\n    limitations: 'Academic model, not clinically validated; the training dataset has known train/test overlap.' };\n}\nreturn [{ json: { case_id: s.case_id, patient: s.patient, created: new Date().toISOString(), prediction: P, region: s.region,\n  gradcam_png_base64: s.gradcam_png_base64, trend: s.trend, recommendations: s.recommendations, report, report_source: source,\n  review: { passed: s.review_passed, attempts: s.attempt, issues: s.issues },\n  approval: { status: 'pending' }, disclaimer: 'Educational AI-generated screening report. Not a medical device and not a diagnosis; must be reviewed by a qualified clinician.' } }];\n"
+   },
+   "id": "a1000000-0000-4000-8000-000000000010",
+   "name": "Assemble Report",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    920,
+    -80
+   ]
+  },
+  {
+   "parameters": {
+    "method": "POST",
+    "url": "http://localhost:8000/cases",
+    "sendBody": true,
+    "contentType": "raw",
+    "rawContentType": "application/json",
+    "body": "={{JSON.stringify($json)}}",
+    "options": {
+     "timeout": 60000
+    }
+   },
+   "id": "a1000000-0000-4000-8000-000000000011",
+   "name": "Save Case",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1160,
+    -80
+   ]
+  },
+  {
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{$json}}",
+    "options": {
+     "responseCode": 200
+    }
+   },
+   "id": "a1000000-0000-4000-8000-000000000012",
+   "name": "Return Report",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.4,
+   "position": [
+    1400,
+    -80
+   ]
+  },
+  {
+   "parameters": {
+    "height": 200,
+    "width": 420,
+    "content": "ALZHEIMER REPORT AGENT\nClassifier service perceives (ResNet18 + Grad-CAM). Code nodes decide facts/trend/recommendations. Ollama only phrases the report. Reviewer node fact-checks the draft; max 2 auto-revisions, then a template fallback. Human approval is a separate webhook."
+   },
+   "id": "a1000000-0000-4000-8000-000000000013",
+   "name": "Notes",
+   "type": "n8n-nodes-base.stickyNote",
+   "typeVersion": 1,
+   "position": [
+    -1000,
+    -320
+   ]
+  }
+ ],
+ "connections": {
+  "Webhook - Receive Scan": {
+   "main": [
+    [
+     {
+      "node": "Classifier - Predict",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Classifier - Predict": {
+   "main": [
+    [
+     {
+      "node": "Rules - Decide",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Rules - Decide": {
+   "main": [
+    [
+     {
+      "node": "Needs Clarification?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Needs Clarification?": {
+   "main": [
+    [
+     {
+      "node": "Return Clarification",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Build Writer Request",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build Writer Request": {
+   "main": [
+    [
+     {
+      "node": "Ollama - Report Writer",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Ollama - Report Writer": {
+   "main": [
+    [
+     {
+      "node": "Reviewer - Fact Check",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Reviewer - Fact Check": {
+   "main": [
+    [
+     {
+      "node": "Review Done?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Review Done?": {
+   "main": [
+    [
+     {
+      "node": "Assemble Report",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Build Writer Request",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Assemble Report": {
+   "main": [
+    [
+     {
+      "node": "Save Case",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Save Case": {
+   "main": [
+    [
+     {
+      "node": "Return Report",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1"
+ },
+ "tags": []
+}

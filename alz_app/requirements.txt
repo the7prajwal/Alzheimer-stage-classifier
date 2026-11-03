@@ -1,0 +1,10 @@
+streamlit>=1.50
+torch
+torchvision
+pillow
+numpy
+pandas
+requests
+huggingface_hub
+grad-cam
+xhtml2pdf

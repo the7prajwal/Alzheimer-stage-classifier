@@ -10,7 +10,7 @@ from pytorch_grad_cam.utils.image import show_cam_on_image
 # ============================================================
 # Config
 # ============================================================
-HF_REPO_ID = "the7prajwal/alzheimer-stage-resnet18"
+HF_REPO_ID = "the7prajwal/alzheimer-stage-classifier-resnet18"
 CLASSES = ["NonDemented", "VeryMildDemented", "MildDemented", "ModerateDemented"]
 IMG_SIZE = 224
 MEAN = [0.485, 0.456, 0.406]
